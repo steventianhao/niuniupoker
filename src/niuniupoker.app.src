@@ -1,0 +1,13 @@
+{application, niuniupoker,
+ [
+  {description, "niuniupoker, a chinese poker card game"},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  cowboy
+                 ]},
+  {mod, { niuniupoker_app, []}},
+  {env, []}
+ ]}.
