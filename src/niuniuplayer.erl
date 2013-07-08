@@ -7,13 +7,11 @@
 %% 支持两种协议websocket和tcp
 
 %%beforeauth
--record(state,{curr_user,room,user_map,rooms}).
+-record(state,{curr_user,table,user_map,tables}).
 
 -export([code_change/4,handle_event/3,handle_info/3,handle_sync_event/4,init/1,terminate/3]).
--export([before_auth/2,after_auth/2,join_room/2]).
--export([quit/0,auth/1,talk/1,start_link/0,join/1,status/0]).
-
--define(SERVER,?MODULE).
+-export([before_auth/2,after_auth/2,at_table/2]).
+-export([quit/1,auth/2,talk/2,start_link/0,join/2,status/1]).
 
 init_users()->
 	D0=dict:new(),
@@ -22,35 +20,34 @@ init_users()->
 	D3=dict:append("t3",{3,"sammi"},D2),
 	D3.
 
-init_rooms()->
+init_tables()->
 	[1,2,3,4,5,6].
 
 start_link()->
 	Users=init_users(),
-	Rooms=init_rooms(),
-	gen_fsm:start_link({local,?SERVER},?MODULE,[Users,Rooms],[]).
+	Tables=init_tables(),
+	gen_fsm:start_link(?MODULE,[Users,Tables],[]).
 
-quit()->
-	gen_fsm:send_all_state_event(?SERVER,quit).
+quit(Pid)->
+	gen_fsm:send_all_state_event(Pid,quit).
 
-status()->
-	gen_fsm:send_all_state_event(?SERVER,status).
+status(Pid)->
+	gen_fsm:send_all_state_event(Pid,status).
 
-join(RoomNo)->
-	gen_fsm:send_event(?SERVER,{join,RoomNo}).
+join(Pid,TableId)->
+	gen_fsm:send_event(Pid,{join,TableId}).
 
-auth(Token)->
-	gen_fsm:send_event(?SERVER,{auth,Token}).
+auth(Pid,Token)->
+	gen_fsm:send_event(Pid,{auth,Token}).
 
-talk(Words)->
-	gen_fsm:send_event(?SERVER,{talk,Words}).
+talk(Pid,Words)->
+	gen_fsm:send_event(Pid,{talk,Words}).
 
-init([Users,Rooms])->
-	{ok,before_auth,#state{user_map=Users,rooms=Rooms}}.
+init([Users,Tables])->
+	{ok,before_auth,#state{user_map=Users,tables=Tables}}.
 
 before_auth({auth,Token},StateData)->
 	Users=StateData#state.user_map,
-	io:format("users ~p#~p# ~n",[Token,Users]),
 	case dict:find(Token,Users) of
 		{ok,Value}->
 			NextState=StateData#state{curr_user=Value},
@@ -59,34 +56,57 @@ before_auth({auth,Token},StateData)->
 			{next_state,before_auth,StateData}
 	end.
 
-after_auth({join,RoomNo},StateData)->
-	case lists:any(fun(El)-> El=:=RoomNo end,StateData#state.rooms) of
+after_auth({join,TableId},StateData)->
+	case lists:any(fun(El)-> El=:=TableId end,StateData#state.tables) of
 		true-> 
-			NextState=StateData#state{room=RoomNo},
-			gproc:reg({p,l,{room,RoomNo}}),
-			{next_state,join_room,NextState};
+			NextState=StateData#state{table=TableId},
+			gproc:reg({p,l,{at_table,TableId}}),
+			gproc:send({p,l,{at_table,TableId}},{join,StateData#state.curr_user}),
+			{next_state,at_table,NextState};
 		false->
 			{next_state,after_auth,StateData}
 	end.
 
-join_room({talk,Words},StateData)->
-	RoomNo=StateData#state.room,
+at_table({talk,Words},StateData)->
+	TableId=StateData#state.table,
 	User=StateData#state.curr_user,
-	gproc:send({p,l,{table,RoomNo}},{talk,User,Words}),
-	{next_state,after_auth,StateData}.
+	gproc:send({p,l,{at_table,TableId}},{talk,User,Words}),
+	{next_state,at_table,StateData}.
+
+handle_info({join,User},StateName,StateData)->
+	case StateData#state.curr_user of
+		User->ok;
+		_->io:format("User# ~p join table# ~p~n",[User,StateData#state.table])
+	end,
+	{next_state,StateName,StateData};
+
+handle_info({quit,User},StateName,StateData)->
+	case StateData#state.curr_user of
+		User->ok;
+		_->io:format("User# ~p quit table# ~p~n",[User,StateData#state.table])
+	end,
+	{next_state,StateName,StateData};
 
 handle_info({talk,User,Words},StateName,StateData)->
-	io:format("i got msg from ~p, the content is ~p~n",[User,Words]),
+	case StateData#state.curr_user of
+		User->ok;
+		_->io:format("i got msg from ~p, the content is ~p~n",[User,Words])
+	end,
 	{next_state,StateName,StateData}.
 
 handle_sync_event(_Event,_From,_StateName,StateData)->
 	{stop,"unexpected invocation",StateData}.
 
 handle_event(status,StateName,StateData)->
-	io:format("room# ~p, user# ~p~n",[StateData#state.room,StateData#state.curr_user]),
+	io:format("table# ~p, user# ~p~n",[StateData#state.table,StateData#state.curr_user]),
 	{next_state,StateName,StateData};
-handle_event(quit,_StateName,StateData)->
-	{stop,normal,StateData}.
+handle_event(quit,StateName,StateData)->
+	case StateName of
+		before_auth->{stop,normal,StateData};
+		_->	
+			gproc:send({p,l,{at_table,StateData#state.table}},{quit,StateData#state.curr_user}),
+			{stop,normal,StateData}
+	end.
 
 terminate(_Reason,_StateName,_StateData)->
 	ok.
